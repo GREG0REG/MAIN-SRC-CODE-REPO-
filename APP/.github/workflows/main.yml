@@ -1,0 +1,115 @@
+name: Build Flutter APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Setup Java with built-in Gradle caching
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      # 2. Setup Flutter with built-in package caching
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+          cache: true
+
+      # 3. Generate Gradle wrapper files with CORRECT Gradle version
+      - name: Generate Gradle wrapper
+        run: |
+          flutter create --platforms=android temp_wrapper_project
+          cp temp_wrapper_project/android/gradlew android/
+          cp temp_wrapper_project/android/gradlew.bat android/
+          mkdir -p android/gradle/wrapper
+          cp temp_wrapper_project/android/gradle/wrapper/gradle-wrapper.jar android/gradle/wrapper/
+          # CRITICAL: Use Gradle 8.4 (required by Android Gradle Plugin 8.3.0)
+          echo "distributionBase=GRADLE_USER_HOME" > android/gradle/wrapper/gradle-wrapper.properties
+          echo "distributionPath=wrapper/dists" >> android/gradle/wrapper/gradle-wrapper.properties
+          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-all.zip" >> android/gradle/wrapper/gradle-wrapper.properties
+          echo "networkTimeout=10000" >> android/gradle/wrapper/gradle-wrapper.properties
+          echo "validateDistributionUrl=true" >> android/gradle/wrapper/gradle-wrapper.properties
+          echo "zipStoreBase=GRADLE_USER_HOME" >> android/gradle/wrapper/gradle-wrapper.properties
+          echo "zipStorePath=wrapper/dists" >> android/gradle/wrapper/gradle-wrapper.properties
+          chmod +x android/gradlew
+          rm -rf temp_wrapper_project
+
+      # 4. Run flutter pub get to create local.properties
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      # 5. Cache the Android Signing Keystore
+      - name: Cache Android Keystore
+        id: cache-keystore
+        uses: actions/cache@v4
+        with:
+          path: |
+            android/app/release-key.jks
+            android/key.properties
+          key: android-keystore-v1
+
+      # 6. Generate Keystore ONLY if it wasn't found in the cache
+      - name: Generate signing keystore
+        if: steps.cache-keystore.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p android/app
+          keytool -genkey -v -keystore android/app/release-key.jks \
+            -storepass releasepass -alias release -keypass releasepass \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Event Countdown,O=Personal,C=US"
+          
+          echo "storePassword=releasepass" > android/key.properties
+          echo "keyPassword=releasepass" >> android/key.properties
+          echo "keyAlias=release" >> android/key.properties
+          echo "storeFile=release-key.jks" >> android/key.properties
+
+      # 7. Verify keystore exists before building
+      - name: Verify Keystore Exists
+        run: |
+          if [ ! -f android/app/release-key.jks ]; then
+            echo "ERROR: Keystore file not found!"
+            exit 1
+          fi
+          echo "Keystore found successfully."
+
+      # 8. Configure release signing
+      - name: Configure release signing
+        run: |
+          python3 -c "
+          import re
+          with open('android/app/build.gradle', 'r') as f:
+              content = f.read()
+          
+          if 'signingConfig signingConfigs.release' not in content:
+              content = content.replace(
+                  'signingConfig signingConfigs.debug', 
+                  'signingConfig signingConfigs.release'
+              )
+              with open('android/app/build.gradle', 'w') as f:
+                  f.write(content)
+              print('Updated build.gradle to use release signing.')
+          else:
+              print('build.gradle already configured for release signing.')
+          "
+
+      # 9. Build the APK
+      - name: Build Debug APK
+        run: flutter build apk --debug
+
+      # 10. Upload APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk

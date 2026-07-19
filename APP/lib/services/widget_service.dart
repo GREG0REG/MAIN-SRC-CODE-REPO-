@@ -1,0 +1,170 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../database_helper.dart';
+import '../models/event.dart';
+import '../services/countdown_service.dart';
+import '../services/settings_service.dart';
+import '../theme/app_themes.dart';
+
+/// Updates the Android home screen widgets with beautiful circular progress.
+class WidgetService {
+  WidgetService._();
+  static final WidgetService instance = WidgetService._();
+
+  static const MethodChannel _channel =
+      MethodChannel('com.example.event_countdown/widget');
+
+  /// Calculate progress percentage for the circular ring (0-100)
+  static int _calculateProgress(Event event, DateTime now) {
+    try {
+      final startMillis = event.startTimeMillis ?? event.dateMillis;
+      final endMillis = event.deadlineMillis ?? event.dateMillis;
+
+      if (startMillis == endMillis) return 65; // Default for date-only events
+
+      final total = endMillis - startMillis;
+      final elapsed = now.millisecondsSinceEpoch - startMillis;
+
+      if (total <= 0) return 0;
+      final progress = ((elapsed / total) * 100).round();
+      return progress.clamp(0, 100);
+    } catch (e) {
+      return 65;
+    }
+  }
+
+  /// True when the event's deadline (or date) is under 24h away — this is
+  /// what drives the "Pulse Animation" widget setting.
+  static bool _isUrgent(Event event, DateTime now) {
+    try {
+      final endMillis = event.deadlineMillis ?? event.dateMillis;
+      final remaining = endMillis - now.millisecondsSinceEpoch;
+      return remaining > 0 && remaining <= const Duration(hours: 24).inMilliseconds;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<WidgetPalette> _resolvePalette() async {
+    final theme = await SettingsService.instance.getSelectedTheme();
+    final highContrast = await SettingsService.instance.getHighContrast();
+    Color? customColor;
+    if (theme == AppThemeOption.customHex) {
+      customColor = await SettingsService.instance.getCustomColor();
+    }
+    return AppThemes.widgetPaletteFor(
+      theme,
+      customColor: customColor,
+      highContrast: highContrast,
+    );
+  }
+
+  /// Refresh the Event Countdown widget with the next upcoming event.
+  static Future<void> refreshWidget() async {
+    try {
+      final events = await DatabaseHelper.instance.getAllEventsSorted();
+      final now = DateTime.now();
+      final smartFormat = await SettingsService.instance.getSmartFormatEnabled();
+
+      String title = 'No upcoming events';
+      String countdown = '';
+      int progressPercent = 65;
+      bool isUrgent = false;
+
+      final activeEvent = CountdownService.getActiveEvent(events, now);
+      if (activeEvent != null) {
+        title = activeEvent.title;
+        final result = CountdownService.buildCountdownText(
+          activeEvent,
+          now,
+          smartFormatEnabled: smartFormat,
+        );
+        countdown = result.text;
+        progressPercent = _calculateProgress(activeEvent, now);
+        isUrgent = _isUrgent(activeEvent, now);
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('event_title', title);
+      await prefs.setString('countdown_text', countdown);
+      await prefs.setInt('widget_progress_percent', progressPercent);
+
+      final palette = await _resolvePalette();
+      final showProgress = await SettingsService.instance.getWidgetProgressBar();
+      final pulseEnabled = await SettingsService.instance.getWidgetPulseAnimation();
+
+      final bgType = await SettingsService.instance.getWidgetBackgroundType();
+      final imagePath = bgType == WidgetBackgroundType.customImage
+          ? await SettingsService.instance.getWidgetImagePath()
+          : null;
+
+      await _channel.invokeMethod('updateWidget', {
+        'title': title,
+        'countdown': countdown,
+        // Legacy single-color key kept for backward compatibility.
+        'bgColor': palette.startHex,
+        'bgColorStart': palette.startHex,
+        'bgColorEnd': palette.endHex,
+        'textColor': '#FFFFFF',
+        'progressPercent': progressPercent,
+        'showProgress': showProgress,
+        'pulseEnabled': pulseEnabled,
+        'isUrgent': isUrgent,
+        'isAmoled': palette.isAmoled,
+        'isHighContrast': palette.isHighContrast,
+        'bgImagePath': imagePath,
+      });
+    } catch (e) {
+      debugPrint('Widget refresh error: $e');
+    }
+  }
+
+  /// Refresh the Pomodoro widget with current timer state.
+  static Future<void> refreshPomodoroWidget() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final subject = prefs.getString('pomodoro_subject') ?? 'Ready to Focus';
+      final timerText = prefs.getString('pomodoro_timer_text') ?? 'Tap to start';
+      final status = prefs.getString('pomodoro_status') ?? 'Focus';
+
+      // Calculate pomodoro progress (25 min = 1500 seconds)
+      final parts = timerText.split(':');
+      int progressPercent = 45;
+      if (parts.length == 2) {
+        final minutes = int.tryParse(parts[0]) ?? 25;
+        final seconds = int.tryParse(parts[1]) ?? 0;
+        final totalSeconds = minutes * 60 + seconds;
+        progressPercent = ((totalSeconds / 1500) * 100).round().clamp(0, 100);
+      }
+      final isRunning = status.toLowerCase().contains('focus') || status.toLowerCase().contains('break');
+
+      final palette = await _resolvePalette();
+      final showProgress = await SettingsService.instance.getWidgetProgressBar();
+      final pulseEnabled = await SettingsService.instance.getWidgetPulseAnimation();
+
+      await prefs.setString('pomodoro_bg_color', palette.startHex);
+      await prefs.setInt('pomodoro_progress_percent', progressPercent);
+
+      await _channel.invokeMethod('updatePomodoroWidget', {
+        'subject': subject,
+        'timerText': timerText,
+        'status': status,
+        'bgColor': palette.startHex,
+        'bgColorStart': palette.startHex,
+        'bgColorEnd': palette.endHex,
+        'progressPercent': progressPercent,
+        'showProgress': showProgress,
+        // Pulse only while a session is actively running — mirrors the
+        // "Pulse Animation" description ("gentle pulse when close/active").
+        'pulseEnabled': pulseEnabled && isRunning,
+        'isUrgent': isRunning,
+        'isAmoled': palette.isAmoled,
+        'isHighContrast': palette.isHighContrast,
+      });
+    } catch (e) {
+      debugPrint('Pomodoro widget refresh error: $e');
+    }
+  }
+}
