@@ -41,7 +41,6 @@ object WidgetArtRenderer {
         val r = Color.red(background) / 255.0
         val g = Color.green(background) / 255.0
         val b = Color.blue(background) / 255.0
-        // Relative luminance (sRGB approximation is sufficient here).
         val luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
         return if (luminance > 0.55) Color.BLACK else Color.WHITE
     }
@@ -73,8 +72,6 @@ object WidgetArtRenderer {
                 }
                 isAmoled -> {
                     canvas.drawColor(Color.BLACK)
-                    // Faint diagonal tint for depth, never bright enough to
-                    // hurt true-black OLED power savings.
                     val tint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         shader = LinearGradient(
                             0f, 0f, CARD_W.toFloat(), CARD_H.toFloat(),
@@ -93,7 +90,6 @@ object WidgetArtRenderer {
                     }
                     canvas.drawRect(rect, gradientPaint)
 
-                    // Soft glass sheen, top-left.
                     val sheen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         shader = RadialGradient(
                             CARD_W * 0.22f, -CARD_H * 0.15f, CARD_W * 0.65f,
@@ -105,13 +101,10 @@ object WidgetArtRenderer {
                 }
             }
         } else if (isHighContrast) {
-            // Scrim so text stays legible even with high-contrast requested
-            // over a custom photo background.
             val scrim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = colorWithAlpha(Color.BLACK, 140) }
             canvas.drawRect(rect, scrim)
         }
 
-        // Border for definition against busy home-screen wallpapers.
         val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = if (isHighContrast) 3f else 1.5f
@@ -134,7 +127,6 @@ object WidgetArtRenderer {
                 postTranslate(dx, dy)
             }
             canvas.drawBitmap(src, matrix, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
-            // Scrim for text legibility over arbitrary photos.
             val scrim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = LinearGradient(
                     0f, 0f, CARD_W.toFloat(), 0f,
@@ -168,15 +160,12 @@ object WidgetArtRenderer {
         val ringRect = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
         val progress = progressFraction.coerceIn(0f, 1f)
 
-        // Gentle glow halo — the closest a static widget snapshot can get to
-        // a "pulse": intensity varies with a coarse time phase so it looks
-        // alive across successive refreshes without any background service.
         if (pulseEnabled && isUrgent && !isHighContrast) {
             val phase = ((System.currentTimeMillis() / 1200L) % 2L).toInt()
             val glowAlpha = if (phase == 0) 70 else 130
             val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
-                strokeWidth = strokeWidth * 2.1f
+                this.strokeWidth = strokeWidth * 2.1f
                 strokeCap = Paint.Cap.ROUND
                 color = colorWithAlpha(colorEnd, glowAlpha)
                 maskFilter = BlurMaskFilter(radius * 0.5f, BlurMaskFilter.Blur.NORMAL)
@@ -184,10 +173,9 @@ object WidgetArtRenderer {
             canvas.drawArc(ringRect, -90f, 360f * progress, false, glowPaint)
         }
 
-        // Track.
         val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = strokeWidth
+            this.strokeWidth = strokeWidth
             color = when {
                 isHighContrast -> colorWithAlpha(bestTextColor(colorStart), 90)
                 isAmoled -> colorWithAlpha(Color.WHITE, 25)
@@ -196,10 +184,9 @@ object WidgetArtRenderer {
         }
         canvas.drawCircle(cx, cy, radius, trackPaint)
 
-        // Progress arc.
         val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = strokeWidth
+            this.strokeWidth = strokeWidth
             strokeCap = Paint.Cap.ROUND
             if (isHighContrast) {
                 color = colorStart
@@ -215,7 +202,6 @@ object WidgetArtRenderer {
         return bmp
     }
 
-    /** Fully transparent placeholder used when the progress ring is disabled. */
     fun emptyBitmap(): Bitmap = Bitmap.createBitmap(RING_SIZE, RING_SIZE, Bitmap.Config.ARGB_8888)
 
     private fun colorWithAlpha(color: Int, alpha: Int): Int {
